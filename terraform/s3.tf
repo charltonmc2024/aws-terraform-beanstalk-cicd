@@ -10,6 +10,3 @@ resource "aws_s3_bucket" "codepipeline_artifact" {
   bucket = "${var.app_name}-artifacts-${random_id.bucket_suffix.hex}"
 }
 
-resource "aws_s3_bucket" "beanstalk_bucket" {
-  bucket = "${var.app_name}-beanstalk-${random_id.bucket_suffix.hex}"
-}
