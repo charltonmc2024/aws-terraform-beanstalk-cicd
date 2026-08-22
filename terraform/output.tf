@@ -54,7 +54,3 @@ output "elastic_beanstalk_environment_url" {
   value       = "http://${aws_elastic_beanstalk_environment.nginx_env.cname}"
 }
 
-output "elastic_beanstalk_s3_bucket" {
-  description = "elastic beanstalk s3 bucket"
-  value       = aws_s3_bucket.beanstalk_bucket.bucket
-}
