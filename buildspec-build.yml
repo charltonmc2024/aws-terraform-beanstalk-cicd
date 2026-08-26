@@ -1,0 +1,77 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+    - echo "Checking Docker and zip"
+    - docker --version
+    - zip --version
+
+  pre_build:
+    commands:
+    - echo "Logging into Amazon ECR"
+    - echo "ECR Repository is $ECR_REPOSITORY_URI"
+
+    - |
+      if [ -z "$ECR_REPOSITORY_URI" ]; then
+        echo "ERROR: ECR_REPOSITORY_URI is not set."
+        exit 1
+      fi
+    - |
+      if [ -z "$AWS_REGION" ]; then
+        echo "ERROR: AWS_REGION is not set."
+        exit 1
+      fi
+    - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REPOSITORY_URI"
+
+  build:
+    commands:
+    - echo "Checking source directory"
+    - ls -la application
+
+    - echo "Building Docker image"
+    - docker build -t "$ECR_REPOSITORY_URI:latest" ./application
+
+    - echo "Verifying HTML inside Docker image"
+    - docker run --rm "$ECR_REPOSITORY_URI:latest" cat /usr/share/nginx/html/index.html
+
+    # 1. MUST PUSH IMAGE BEFORE PACKAGING AND CREATING EB VERSION
+    - echo "Pushing Docker image to ECR"
+    - docker push "$ECR_REPOSITORY_URI:latest"
+
+    - echo "Creating Dockerrun.aws.json"
+    - |
+      cat > application/Dockerrun.aws.json <<EOF
+      {
+        "AWSEBDockerrunVersion": "1",
+        "Image": {
+          "Name": "${ECR_REPOSITORY_URI}:latest",
+          "Update": "true"
+        },
+        "Ports": [
+          {
+            "ContainerPort": "80"
+          }
+        ]
+      }
+      EOF
+    - echo "===== Generated Dockerrun.aws.json ====="
+    - cat application/Dockerrun.aws.json
+    - echo "========================================="
+
+    - echo "Creating deployment zip"
+    - cd application
+    - zip -j ../deploy.zip Dockerrun.aws.json
+    - cd ..
+
+    - echo "===== Deployment package ====="
+    - ls -lh deploy.zip
+    - unzip -l deploy.zip
+
+    - echo "===== Dockerrun inside deployment package ====="
+    - unzip -p deploy.zip Dockerrun.aws.json
+    - echo "================================================"
+
+artifacts:
+  files:
+  - deploy.zip

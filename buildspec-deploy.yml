@@ -1,0 +1,253 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+    - echo "Checking AWS CLI"
+    - aws --version
+
+  pre_build:
+    commands:
+    - echo "Starting Elastic Beanstalk deployment"
+
+    - echo "Checking required environment variables"
+    - |
+      for var in EB_APPLICATION_NAME EB_ENVIRONMENT_NAME EB_CNAME CODEPIPELINE_ARTIFACT_BUCKET AWS_REGION; do
+        val=$(eval "echo \$$var")
+
+        if [ -z "$val" ]; then
+          echo "ERROR: Environment variable $var is not set."
+          exit 1
+        fi
+      done
+
+    - echo "EB_APPLICATION_NAME=$EB_APPLICATION_NAME"
+    - echo "EB_ENVIRONMENT_NAME=$EB_ENVIRONMENT_NAME"
+    - echo "EB_CNAME=$EB_CNAME"
+    - echo "CODEPIPELINE_ARTIFACT_BUCKET=$CODEPIPELINE_ARTIFACT_BUCKET"
+    - echo "AWS_REGION=$AWS_REGION"
+
+  build:
+    commands:
+    ############################################
+    # STEP 1 - Check Deployment Package
+    ############################################
+
+    - echo "STEP 1 - Checking deployment package"
+    - echo "Current directory:"
+    - pwd
+
+    - echo "Files received from Build stage:"
+    - find . -maxdepth 3 -type f -print
+
+    - |
+      if [ ! -f deploy.zip ]; then
+        echo "ERROR: deploy.zip not found at repository root."
+        echo "Searching for deploy.zip..."
+        find . -name "deploy.zip" -print
+        exit 1
+      fi
+
+    - echo "deploy.zip found:"
+    - ls -lh deploy.zip
+    - unzip -l deploy.zip
+
+    - echo "===== Dockerrun.aws.json from deployment package ====="
+    - unzip -p deploy.zip Dockerrun.aws.json
+    - echo "======================================================"
+
+    ############################################
+    # STEP 2 - Generate Version Label
+    ############################################
+
+    - echo "STEP 2 - Generating Elastic Beanstalk version label"
+
+    - |
+      VERSION_LABEL="${CODEBUILD_BUILD_NUMBER}-$(date +%Y%m%d%H%M%S)"
+      DEPLOY_S3_KEY="eb-deploys/deploy-${VERSION_LABEL}.zip"
+
+      echo "export VERSION_LABEL='${VERSION_LABEL}'" > /tmp/env_vars
+      echo "export DEPLOY_S3_KEY='${DEPLOY_S3_KEY}'" >> /tmp/env_vars
+
+      echo "Version label: ${VERSION_LABEL}"
+      echo "S3 key: ${DEPLOY_S3_KEY}"
+
+    ############################################
+    # STEP 3 - Upload Deployment Package
+    ############################################
+
+    - echo "STEP 3 - Uploading deployment package to S3"
+
+    - |
+      . /tmp/env_vars
+
+      aws s3 cp \
+        deploy.zip \
+        "s3://${CODEPIPELINE_ARTIFACT_BUCKET}/${DEPLOY_S3_KEY}" \
+        --region "$AWS_REGION"
+
+    ############################################
+    # STEP 4 - Create Elastic Beanstalk Version
+    ############################################
+
+    - echo "STEP 4 - Creating Elastic Beanstalk application version"
+
+    - |
+      . /tmp/env_vars
+
+      aws elasticbeanstalk create-application-version \
+        --application-name "$EB_APPLICATION_NAME" \
+        --version-label "$VERSION_LABEL" \
+        --source-bundle \
+        S3Bucket="$CODEPIPELINE_ARTIFACT_BUCKET",S3Key="$DEPLOY_S3_KEY" \
+        --region "$AWS_REGION"
+
+    ############################################
+    # STEP 5 - Verify Application Version
+    ############################################
+
+    - echo "STEP 5 - Verifying Elastic Beanstalk application version"
+
+    - |
+      . /tmp/env_vars
+
+      VERSION_STATUS=$(aws elasticbeanstalk describe-application-versions \
+        --application-name "$EB_APPLICATION_NAME" \
+        --version-labels "$VERSION_LABEL" \
+        --region "$AWS_REGION" \
+        --query 'ApplicationVersions[0].Status' \
+        --output text)
+
+      echo "Application version status: $VERSION_STATUS"
+
+      if [ "$VERSION_STATUS" = "None" ] || [ -z "$VERSION_STATUS" ]; then
+        echo "ERROR: Elastic Beanstalk application version was not found."
+        exit 1
+      fi
+
+      if [ "$VERSION_STATUS" = "FAILED" ]; then
+        echo "ERROR: Elastic Beanstalk application version processing failed."
+        exit 1
+      fi
+
+      if [ "$VERSION_STATUS" != "UNPROCESSED" ] && \
+         [ "$VERSION_STATUS" != "PROCESSED" ]; then
+        echo "ERROR: Unexpected application version status: $VERSION_STATUS"
+        exit 1
+      fi
+
+      echo "Application version ${VERSION_LABEL} exists and is valid."
+
+    ############################################
+    # STEP 6 - Deploy Version
+    ############################################
+
+    - echo "STEP 6 - Deploying version to Elastic Beanstalk environment"
+
+    - |
+      . /tmp/env_vars
+      echo "Deploying version: $VERSION_LABEL"
+      echo "Application: $EB_APPLICATION_NAME"
+      echo "Environment: $EB_ENVIRONMENT_NAME"
+
+      aws elasticbeanstalk update-environment \
+        --application-name "$EB_APPLICATION_NAME" \
+        --environment-name "$EB_ENVIRONMENT_NAME" \
+        --version-label "$VERSION_LABEL" \
+        --region "$AWS_REGION"
+
+    - echo "Elastic Beanstalk deployment initiated successfully."
+
+    ############################################
+    # STEP 7 - Wait for Environment
+    ############################################
+
+    - echo "STEP 7 - Waiting for Elastic Beanstalk deployment"
+
+    - |
+      aws elasticbeanstalk wait environment-updated \
+        --application-name "$EB_APPLICATION_NAME" \
+        --environment-names "$EB_ENVIRONMENT_NAME" \
+        --region "$AWS_REGION"
+
+    ############################################
+    # STEP 8 - Verify Deployment Health
+    ############################################
+
+    - echo "STEP 8 - Checking Elastic Beanstalk environment status"
+
+    - |
+      . /tmp/env_vars
+
+      MAX_ATTEMPTS=12
+      ATTEMPT=1
+
+      while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+
+      echo "Health check attempt $ATTEMPT/$MAX_ATTEMPTS"
+
+      ENV_INFO=$(aws elasticbeanstalk describe-environments \
+        --application-name "$EB_APPLICATION_NAME" \
+        --environment-names "$EB_ENVIRONMENT_NAME" \
+        --region "$AWS_REGION" \
+        --query 'Environments[0].[Status,Health,HealthStatus]' \
+        --output text)
+
+      ENV_STATUS=$(echo "$ENV_INFO" | awk '{print $1}')
+      ENV_HEALTH=$(echo "$ENV_INFO" | awk '{print $2}')
+      ENV_HEALTH_STATUS=$(echo "$ENV_INFO" | awk '{print $3}')
+
+      echo "Environment status: $ENV_STATUS"
+      echo "Environment health: $ENV_HEALTH"
+      echo "Health status: $ENV_HEALTH_STATUS"
+
+      if [ "$ENV_STATUS" = "Ready" ] && \
+        [ "$ENV_HEALTH" = "Green" ] && \
+        [ "$ENV_HEALTH_STATUS" = "Ok" ]; then
+
+        echo "SUCCESS: Elastic Beanstalk environment is Ready, Green, and Ok."
+        break
+      fi
+
+      if [ "$ENV_HEALTH" = "Red" ] || \
+        [ "$ENV_HEALTH" = "Severe" ]; then
+
+        echo "ERROR: Elastic Beanstalk environment health is $ENV_HEALTH."
+        exit 1
+      fi
+
+      if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+        echo "ERROR: Elastic Beanstalk did not reach Green/Ok health within the allowed time."
+        exit 1
+      fi
+
+      echo "Environment is not Green/Ok yet. Waiting 15 seconds..."
+      sleep 15
+
+      ATTEMPT=$((ATTEMPT + 1))
+
+      done
+
+    ############################################
+    # STEP 9 - Testing Deployed Application
+    ############################################
+    - |
+      echo "STEP 9 - Testing deployed application"
+
+      echo "Testing: http://$EB_CNAME"
+
+      HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+        "http://$EB_CNAME/")
+
+      echo "HTTP status: $HTTP_STATUS"
+
+      if [ "$HTTP_STATUS" != "200" ]; then
+        echo "ERROR: Application returned HTTP $HTTP_STATUS"
+        exit 1
+      fi
+
+      echo "SUCCESS: Application returned HTTP 200."
+
+artifacts:
+  files:
+  - deploy.zip
