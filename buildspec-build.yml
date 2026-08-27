@@ -6,7 +6,6 @@ phases:
     - echo "Checking Docker and zip"
     - docker --version
     - zip --version
-    - command -v docker-credential-ecr-login || true
 
   pre_build:
     commands:
