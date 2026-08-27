@@ -5,13 +5,16 @@ data "external" "codepipeline_execution" {
     "bash",
     "-c",
     <<-EOT
-      EXECUTION_ID=$(aws codepipeline list-pipeline-executions \
+      aws codepipeline list-pipeline-executions \
         --pipeline-name "${aws_codepipeline.terraform_pipeline.name}" \
         --region "${var.aws_region}" \
-        --query 'pipelineExecutionSummaries[0].pipelineExecutionId' \
-        --output text)
-
-      echo "{\"execution_id\":\"$EXECUTION_ID\"}"
+        --query 'pipelineExecutionSummaries[0]' \
+        --output json |
+      jq -c '{
+        pipelineExecutionId: .pipelineExecutionId,
+        status: .status,
+        startTime: .startTime
+      }'
     EOT
   ]
 }
