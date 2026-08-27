@@ -59,10 +59,19 @@ output "codebuild_deploy_role_arn" {
   value       = aws_iam_role.codebuild_deploy_role.arn
 }
 
-output "codepipeline_name" {
-  description = "Name of my Pipeline"
-  value       = "${var.app_name}-CodePipeline"
+output "codepipeline_latest_execution_id" {
+  description = "Latest CodePipeline execution ID"
+  value       = data.external.codepipeline_execution.result.pipelineExecutionId
+}
 
+output "codepipeline_latest_execution_status" {
+  description = "Latest CodePipeline execution status"
+  value       = data.external.codepipeline_execution.result.status
+}
+
+output "codepipeline_latest_execution_time" {
+  description = "Latest CodePipeline execution start time"
+  value       = data.external.codepipeline_execution.result.startTime
 }
 output "codebuild_test_project_name" {
   description = "CodeBuild Test Project Name"
