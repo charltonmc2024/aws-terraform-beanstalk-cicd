@@ -59,6 +59,11 @@ output "codebuild_deploy_role_arn" {
   value       = aws_iam_role.codebuild_deploy_role.arn
 }
 
+output "codepipeline_name" {
+  description = "Name of my Pipeline"
+  value       = "${var.app_name}-CodePipeline"
+
+}
 output "codebuild_test_project_name" {
   description = "CodeBuild Test Project Name"
   value       = aws_codebuild_project.test.name
